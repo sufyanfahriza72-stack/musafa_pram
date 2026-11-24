@@ -1,4 +1,4 @@
-const CACHE_NAME = 'musafa-pwa-v3';
+const CACHE_NAME = 'musafa-pwa-final-v1';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -32,7 +32,6 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
-  // Jangan cache panggilan ke Google Apps Script / Google UserContent agar data selalu real-time
   if (url.hostname.includes('script.google.com') || url.hostname.includes('googleusercontent.com')) {
     event.respondWith(fetch(req));
     return;

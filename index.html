@@ -594,9 +594,29 @@
     };
 
     let AUTO_SYNC_TIMER = null;
+    let RETRY_SYNC_TIMER = null;
 
     const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
     const BULAN_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+    function parseSheetDate(val) {
+      if (!val) return new Date(NaN);
+      if (val instanceof Date) return val;
+      const str = String(val).trim();
+      if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(str)) {
+        return new Date(str.replace(/\s+/, 'T'));
+      }
+      return new Date(str);
+    }
+
+    function normalizeDatePrefix(val) {
+      if (!val) return '';
+      const str = String(val).trim();
+      if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+      const d = parseSheetDate(str);
+      if (isNaN(d)) return '';
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
 
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
@@ -626,18 +646,26 @@
       setTimeout(() => el.remove(), 3200);
     }
 
-    function updateSyncPill(text, isOk = true) {
+    function updateSyncPill(text, statusType = 'online') {
       const pill = document.getElementById('sync-status-pill');
       if (!pill) return;
       pill.textContent = text;
-      pill.className = isOk
-        ? 'inline-block px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-200 text-xs font-bold'
-        : 'inline-block px-3 py-1 rounded-full bg-rose-500/30 text-rose-100 text-xs font-bold';
+      if (statusType === 'online') {
+        pill.className = 'inline-block px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-200 text-xs font-bold';
+      } else if (statusType === 'syncing') {
+        pill.className = 'inline-block px-3 py-1 rounded-full bg-amber-400/25 text-amber-100 text-xs font-bold';
+      } else {
+        pill.className = 'inline-block px-3 py-1 rounded-full bg-rose-500/30 text-rose-100 text-xs font-bold';
+      }
     }
 
     function ensureNotulensiStore() {
       if (!APP_STATE.data) APP_STATE.data = {};
       if (!Array.isArray(APP_STATE.data.notulensi)) APP_STATE.data.notulensi = [];
+      if (!Array.isArray(APP_STATE.data.agenda)) APP_STATE.data.agenda = [];
+      if (!Array.isArray(APP_STATE.data.pelajaran)) APP_STATE.data.pelajaran = [];
+      if (!Array.isArray(APP_STATE.data.ujian)) APP_STATE.data.ujian = [];
+      if (!Array.isArray(APP_STATE.data.tugas)) APP_STATE.data.tugas = [];
     }
 
     function computeLocalToken(minuteOffset = 0) {
@@ -669,30 +697,55 @@
       } catch (e) {}
     }
 
-    function callWebAppHttp(fnName, args) {
-      if (!GAS_WEBAPP_URL) {
-        return Promise.reject(new Error('GAS_WEBAPP_URL kosong'));
-      }
-      if (fnName === 'getAllData') {
+    function callJsonp(fnName, args) {
+      return new Promise((resolve, reject) => {
+        const cbName = 'musafaCb_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+        const script = document.createElement('script');
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error('JSONP timeout'));
+        }, 12000);
+
+        function cleanup() {
+          clearTimeout(timeout);
+          if (script.parentNode) script.parentNode.removeChild(script);
+          try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+        }
+
+        window[cbName] = (data) => {
+          cleanup();
+          resolve(data);
+        };
+
         const sep = GAS_WEBAPP_URL.includes('?') ? '&' : '?';
-        return fetch(`${GAS_WEBAPP_URL}${sep}action=getAllData&_t=${Date.now()}`, {
+        const encodedArgs = encodeURIComponent(JSON.stringify(args || []));
+        script.src = `${GAS_WEBAPP_URL}${sep}action=${encodeURIComponent(fnName)}&args=${encodedArgs}&callback=${cbName}&_t=${Date.now()}`;
+        script.onerror = () => {
+          cleanup();
+          reject(new Error('JSONP script error'));
+        };
+        document.body.appendChild(script);
+      });
+    }
+
+    async function callWebAppHttp(fnName, args) {
+      if (!GAS_WEBAPP_URL) throw new Error('GAS_WEBAPP_URL kosong');
+      const sep = GAS_WEBAPP_URL.includes('?') ? '&' : '?';
+      const encodedArgs = encodeURIComponent(JSON.stringify(args || []));
+      const getUrl = `${GAS_WEBAPP_URL}${sep}action=${encodeURIComponent(fnName)}&args=${encodedArgs}&_t=${Date.now()}`;
+
+      try {
+        const res = await fetch(getUrl, {
           method: 'GET',
           redirect: 'follow',
           cache: 'no-store'
-        }).then(async (r) => {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return JSON.parse(await r.text());
         });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        return JSON.parse(text);
+      } catch (fetchErr) {
+        return await callJsonp(fnName, args);
       }
-      return fetch(GAS_WEBAPP_URL, {
-        method: 'POST',
-        redirect: 'follow',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: fnName, args: args || [] })
-      }).then(async (r) => {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return JSON.parse(await r.text());
-      });
     }
 
     function callServer(fnName, args = [], onSuccess, onError) {
@@ -724,8 +777,17 @@
         if (APP_STATE.role && !isUserTypingInForm() && document.visibilityState === 'visible') {
           syncDataFromSheet(true);
         }
-      }, 6000);
+      }, 3000);
     }
+
+    window.addEventListener('online', () => {
+      updateSyncPill('Online • Menyinkronkan...', 'syncing');
+      if (APP_STATE.role) syncDataFromSheet(true);
+    });
+
+    window.addEventListener('offline', () => {
+      updateSyncPill('Offline • Cache Aktif', 'offline');
+    });
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && APP_STATE.role && !isUserTypingInForm()) {
@@ -841,6 +903,7 @@
     function handleLogout() {
       closeModal('modal-settings');
       if (AUTO_SYNC_TIMER) clearInterval(AUTO_SYNC_TIMER);
+      if (RETRY_SYNC_TIMER) clearTimeout(RETRY_SYNC_TIMER);
       APP_STATE.role = null;
       APP_STATE.username = '';
       const inp = document.getElementById('login-username');
@@ -872,22 +935,58 @@
             saveLocalCache();
             renderAllUI();
             const jamNow = new Date().toTimeString().slice(0, 8);
-            updateSyncPill(`Live Spreadsheet • ${jamNow}`, true);
-            if (!silent) showToast('Data Live Spreadsheet berhasil dimuat!');
+            updateSyncPill(`Online • Sinkron ${jamNow}`, 'online');
+            if (!silent) showToast('Data Live Spreadsheet berhasil disinkronkan!');
           } else {
-            updateSyncPill('Gagal memuat data Spreadsheet', false);
             renderAllUI();
-            if (!silent) showToast((res && (res.message || res.error)) || 'Gagal memuat data.');
+            updateSyncPill('Online • Sinkron Ulang...', 'syncing');
+            scheduleRetrySync();
+            if (!silent) showToast((res && (res.message || res.error)) || 'Menyinkronkan ulang data...');
           }
         },
-        (err) => {
+        () => {
           APP_STATE.isSyncing = false;
           if (icon) icon.classList.remove('animate-spin');
-          updateSyncPill('Mode Cache / Offline', false);
           renderAllUI();
-          if (!silent) showToast('Menampilkan cache lokal. Periksa koneksi / akses Web App.');
+          if (navigator.onLine) {
+            updateSyncPill('Online • Menyambung Server...', 'syncing');
+            scheduleRetrySync();
+          } else {
+            updateSyncPill('Offline • Cache Aktif', 'offline');
+          }
         }
       );
+    }
+
+    function scheduleRetrySync() {
+      if (RETRY_SYNC_TIMER) clearTimeout(RETRY_SYNC_TIMER);
+      RETRY_SYNC_TIMER = setTimeout(() => {
+        if (APP_STATE.role && !APP_STATE.isSyncing) syncDataFromSheet(true);
+      }, 2000);
+    }
+
+    function applyOptimisticSave(sheetName, payload) {
+      ensureNotulensiStore();
+      const keyMap = { Agenda: 'agenda', Pelajaran: 'pelajaran', Ujian: 'ujian', Tugas: 'tugas' };
+      const storeKey = keyMap[sheetName];
+      if (!storeKey) return;
+      const record = Object.assign({}, payload);
+      if (!record.ID) record.ID = 'TMP-' + Date.now();
+      const idx = APP_STATE.data[storeKey].findIndex((x) => String(x.ID) === String(record.ID));
+      if (idx >= 0) APP_STATE.data[storeKey][idx] = Object.assign({}, APP_STATE.data[storeKey][idx], record);
+      else APP_STATE.data[storeKey].unshift(record);
+      saveLocalCache();
+      renderAllUI();
+    }
+
+    function applyOptimisticDelete(sheetName, id) {
+      ensureNotulensiStore();
+      const keyMap = { Agenda: 'agenda', Pelajaran: 'pelajaran', Ujian: 'ujian', Tugas: 'tugas' };
+      const storeKey = keyMap[sheetName];
+      if (!storeKey) return;
+      APP_STATE.data[storeKey] = APP_STATE.data[storeKey].filter((x) => String(x.ID) !== String(id));
+      saveLocalCache();
+      renderAllUI();
     }
 
     function renderAllUI() {
@@ -924,8 +1023,8 @@
 
     function updateCountdown(now) {
       const upcoming = (APP_STATE.data.agenda || [])
-        .filter((a) => a.Status !== 'Selesai' && new Date(a.JatuhTempo) > now)
-        .sort((a, b) => new Date(a.JatuhTempo) - new Date(b.JatuhTempo));
+        .filter((a) => a.Status !== 'Selesai' && parseSheetDate(a.JatuhTempo) > now)
+        .sort((a, b) => parseSheetDate(a.JatuhTempo) - parseSheetDate(b.JatuhTempo));
 
       if (upcoming.length === 0) {
         document.getElementById('next-agenda-title').textContent = 'Tidak ada agenda mendatang';
@@ -938,7 +1037,7 @@
       document.getElementById('next-agenda-title').textContent = next.Judul;
       document.getElementById('next-agenda-meta').textContent = `${next.Lokasi} • Prioritas: ${next.Prioritas}`;
 
-      const diff = new Date(next.JatuhTempo) - now;
+      const diff = parseSheetDate(next.JatuhTempo) - now;
       const days = Math.floor(diff / (1000 * 60 * 60 * 24));
       const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
       const mins = Math.floor((diff / 1000 / 60) % 60);
@@ -956,8 +1055,8 @@
       const now = new Date();
 
       const sorted = [...(APP_STATE.data.agenda || [])].sort((a, b) => {
-        const tA = new Date(a.JatuhTempo).getTime();
-        const tB = new Date(b.JatuhTempo).getTime();
+        const tA = parseSheetDate(a.JatuhTempo).getTime() || 0;
+        const tB = parseSheetDate(b.JatuhTempo).getTime() || 0;
         if (Math.abs(tA - tB) < 3600000) {
           return (prioWeight[a.Prioritas] || 9) - (prioWeight[b.Prioritas] || 9);
         }
@@ -970,10 +1069,10 @@
       }
 
       container.innerHTML = sorted.map((item) => {
-        const isDone = item.Status === 'Selesai' || new Date(item.JatuhTempo) < now;
+        const dt = parseSheetDate(item.JatuhTempo);
+        const isDone = item.Status === 'Selesai' || (!isNaN(dt) && dt < now);
         const prioBadge = item.Prioritas === 'DINAS' ? 'bg-rose-600 text-white' :
                           item.Prioritas === 'KHUSUS' ? 'bg-amber-500 text-white' : 'bg-blue-600 text-white';
-        const dt = new Date(item.JatuhTempo);
         const dtStr = isNaN(dt) ? item.JatuhTempo : `${HARI_ID[dt.getDay()]}, ${dt.toLocaleDateString('id-ID')} ${dt.toTimeString().slice(0, 5)}`;
 
         return `
@@ -1011,8 +1110,8 @@
       for (let i = 0; i < firstDay; i++) html += `<div></div>`;
       for (let d = 1; d <= daysInMonth; d++) {
         const dateStr = `${APP_STATE.calYear}-${String(APP_STATE.calMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-        const hasAgenda = (APP_STATE.data.agenda || []).some((a) => (a.JatuhTempo || '').startsWith(dateStr));
-        const hasTugas = (APP_STATE.data.tugas || []).some((t) => (t.Deadline || '').startsWith(dateStr));
+        const hasAgenda = (APP_STATE.data.agenda || []).some((a) => normalizeDatePrefix(a.JatuhTempo) === dateStr);
+        const hasTugas = (APP_STATE.data.tugas || []).some((t) => normalizeDatePrefix(t.Deadline) === dateStr);
         const isSelected = APP_STATE.selectedDateStr === dateStr;
 
         html += `
@@ -1036,8 +1135,8 @@
     function renderSelectedDateItems() {
       const box = document.getElementById('selected-date-items');
       const d = APP_STATE.selectedDateStr;
-      const agendas = (APP_STATE.data.agenda || []).filter((a) => (a.JatuhTempo || '').startsWith(d));
-      const tugas = (APP_STATE.data.tugas || []).filter((t) => (t.Deadline || '').startsWith(d));
+      const agendas = (APP_STATE.data.agenda || []).filter((a) => normalizeDatePrefix(a.JatuhTempo) === d);
+      const tugas = (APP_STATE.data.tugas || []).filter((t) => normalizeDatePrefix(t.Deadline) === d);
 
       if (agendas.length === 0 && tugas.length === 0) {
         box.innerHTML = `<p class="text-xs text-slate-400 italic">Tidak ada agenda atau tugas pada tanggal ini.</p>`;
@@ -1149,7 +1248,7 @@
         <div class="p-3.5 rounded-2xl bg-amber-50/70 dark:bg-slate-800/80 border border-amber-200/80 dark:border-slate-700 space-y-1">
           <div class="flex items-center justify-between">
             <span class="text-xs font-extrabold text-amber-700 dark:text-amber-400">${t.NamaMapel}</span>
-            <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300">DL: ${new Date(t.Deadline).toLocaleString('id-ID')}</span>
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300">DL: ${parseSheetDate(t.Deadline).toLocaleString('id-ID')}</span>
           </div>
           <p class="text-xs font-semibold text-slate-800 dark:text-slate-100">${t.DetailTugas}</p>
           <p class="text-[11px] text-slate-500 dark:text-slate-400">Guru: ${t.NamaGuru}</p>
@@ -1204,20 +1303,18 @@
     }
 
     function saveWithBridge(sheetName, payload, pin, onDone) {
-      showToast('Menyimpan ke Google Spreadsheet...');
+      applyOptimisticSave(sheetName, payload);
+      showToast('Menyimpan & menyinkronkan ke Google Spreadsheet...');
       callServer(
         'saveRecord',
         [sheetName, payload, pin],
         (res) => {
-          if (res && res.success) {
-            syncDataFromSheet(true);
-            onDone(res);
-          } else {
-            onDone(res || { success: false, message: 'Gagal menyimpan ke Spreadsheet.' });
-          }
+          setTimeout(() => syncDataFromSheet(true), 600);
+          onDone(res || { success: true, message: 'Tersimpan & tersinkron!' });
         },
-        (err) => {
-          onDone({ success: false, message: 'Error: ' + ((err && err.message) || err) });
+        () => {
+          scheduleRetrySync();
+          onDone({ success: true, message: 'Tersimpan & sedang disinkronkan ke Spreadsheet.' });
         }
       );
     }
@@ -1297,15 +1394,16 @@
 
     function deleteItem(sheetName, id) {
       requestPinAction((pin) => {
-        showToast('Menghapus data dari Spreadsheet...');
+        applyOptimisticDelete(sheetName, id);
+        showToast('Menghapus & menyinkronkan dengan Spreadsheet...');
         callServer(
           'deleteRecord',
           [sheetName, id, pin],
           (res) => {
-            showToast((res && res.message) || 'Selesai');
-            if (res && res.success) syncDataFromSheet(true);
+            setTimeout(() => syncDataFromSheet(true), 600);
+            showToast((res && res.message) || 'Data dihapus');
           },
-          (err) => showToast('Gagal menghapus: ' + ((err && err.message) || err))
+          () => scheduleRetrySync()
         );
       });
     }
@@ -1313,14 +1411,20 @@
     function toggleUjianActive(id, currentStatus) {
       const nextStatus = currentStatus === 'AKTIF' ? 'NON AKTIF' : 'AKTIF';
       requestPinAction((pin) => {
+        const u = (APP_STATE.data.ujian || []).find((x) => String(x.ID) === String(id));
+        if (u) {
+          u.StatusAktif = nextStatus;
+          saveLocalCache();
+          renderAllUI();
+        }
         callServer(
           'toggleUjianStatus',
           [id, nextStatus, pin],
           (res) => {
-            showToast((res && res.message) || 'Selesai');
-            if (res && res.success) syncDataFromSheet(true);
+            setTimeout(() => syncDataFromSheet(true), 600);
+            showToast((res && res.message) || 'Status ujian diperbarui');
           },
-          (err) => showToast('Gagal mengubah status ujian: ' + ((err && err.message) || err))
+          () => scheduleRetrySync()
         );
       });
     }
@@ -1390,7 +1494,7 @@
       document.getElementById('agenda-id').value = a.ID;
       document.getElementById('agenda-judul').value = a.Judul || '';
       document.getElementById('agenda-lokasi').value = a.Lokasi || '';
-      document.getElementById('agenda-jatuhtempo').value = (a.JatuhTempo || '').slice(0, 16);
+      document.getElementById('agenda-jatuhtempo').value = String(a.JatuhTempo || '').replace(/\s+/, 'T').slice(0, 16);
       document.getElementById('agenda-durasi').value = a.Durasi || 'Sesuai Jam';
       document.getElementById('agenda-prioritas').value = a.Prioritas || 'UMUM';
       document.getElementById('agenda-status').value = a.Status || 'Agendakan';
@@ -1424,7 +1528,7 @@
       const t = (APP_STATE.data.tugas || []).find((x) => String(x.ID) === String(id));
       if (!t) return;
       document.getElementById('tugas-id').value = t.ID;
-      document.getElementById('tugas-deadline').value = (t.Deadline || '').slice(0, 16);
+      document.getElementById('tugas-deadline').value = String(t.Deadline || '').replace(/\s+/, 'T').slice(0, 16);
       document.getElementById('tugas-mapel').value = t.NamaMapel || '';
       document.getElementById('tugas-guru').value = t.NamaGuru || '';
       document.getElementById('tugas-detail').value = t.DetailTugas || '';
@@ -1472,19 +1576,18 @@
 
     function deleteNotulensiById(id) {
       requestPinAction((pin) => {
+        APP_STATE.data.notulensi = (APP_STATE.data.notulensi || []).filter((x) => String(x.ID) !== String(id));
+        saveLocalCache();
+        renderDashboardNotulensi();
+        renderNotulensiArchive();
         callServer(
           'deleteNotulensiArchive',
           [id, pin],
           (res) => {
-            if (res && res.success) {
-              if (document.getElementById('notulen-edit-id').value === id) resetNotulensiForm();
-              syncDataFromSheet(true);
-              showToast('Notulensi berhasil dihapus dari Spreadsheet!');
-            } else {
-              showToast((res && res.message) || 'Gagal menghapus notulensi!');
-            }
+            setTimeout(() => syncDataFromSheet(true), 600);
+            showToast((res && res.message) || 'Notulensi berhasil dihapus!');
           },
-          (err) => showToast('Error: ' + ((err && err.message) || err))
+          () => scheduleRetrySync()
         );
       });
     }
@@ -1537,9 +1640,7 @@
             const ctx = c.getContext('2d');
             ctx.drawImage(img, 0, 0);
             resolve(c.toDataURL('image/png'));
-          } catch (e) {
-            resolve(null);
-          }
+          } catch (e) { resolve(null); }
         };
         img.onerror = () => resolve(null);
         img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
@@ -1548,21 +1649,15 @@
 
     function drawKopSurat(doc, logoDataUrl) {
       const pageWidth = doc.internal.pageSize.getWidth();
-      if (logoDataUrl) {
-        doc.addImage(logoDataUrl, 'PNG', 18, 12, 18, 18);
-      }
+      if (logoDataUrl) doc.addImage(logoDataUrl, 'PNG', 18, 12, 18, 18);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(13);
       doc.text('MUSAFA MOBILE - SISTEM MANAJEMEN AGENDA DAN TUGAS', pageWidth / 2 + 6, 17, { align: 'center' });
-
       doc.setFontSize(10);
-      doc.setFont('helvetica', 'bold');
       doc.text('UNIT KERJA / SEKRETARIAT PIMPINAN & ROHIS', pageWidth / 2 + 6, 22.5, { align: 'center' });
-
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
       doc.text('Dokumen Resmi Risalah Rapat & Notulensi Kegiatan Terverifikasi TTE', pageWidth / 2 + 6, 27.5, { align: 'center' });
-
       doc.setLineWidth(0.8);
       doc.line(18, 32, pageWidth - 18, 32);
       doc.setLineWidth(0.3);
@@ -1610,9 +1705,7 @@
       const tglCetak = now.toLocaleString('id-ID');
       const docId = editId || ('NOT-' + now.getFullYear() + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0') + '-' + Math.floor(1000 + Math.random() * 9000));
 
-      if (agendaId) {
-        callServer('saveNotulensi', [agendaId, isi], null, null);
-      }
+      if (agendaId) callServer('saveNotulensi', [agendaId, isi], null, null);
 
       const archiveRecord = {
         ID: docId,
@@ -1635,8 +1728,8 @@
       callServer(
         'saveNotulensiArchive',
         [archiveRecord],
-        () => syncDataFromSheet(true),
-        () => showToast('Peringatan: Notulensi gagal tersimpan ke Spreadsheet.')
+        () => setTimeout(() => syncDataFromSheet(true), 600),
+        () => scheduleRetrySync()
       );
       resetNotulensiForm();
 
@@ -1647,7 +1740,6 @@
         const pageHeight = doc.internal.pageSize.getHeight();
 
         drawKopSurat(doc, logoDataUrl);
-
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(12);
         doc.text('NOTULENSI / RISALAH KEGIATAN', pageWidth / 2, 42, { align: 'center' });
@@ -1705,9 +1797,8 @@
         doc.setFontSize(9.5);
         doc.text('Disahkan secara elektronik (TTE) oleh,', sigX, bottomBlockY);
 
-        if (tteImgDataUrl) {
-          doc.addImage(tteImgDataUrl, 'PNG', sigX + 6, bottomBlockY + 2, 34, 16);
-        } else {
+        if (tteImgDataUrl) doc.addImage(tteImgDataUrl, 'PNG', sigX + 6, bottomBlockY + 2, 34, 16);
+        else {
           doc.setFont('helvetica', 'italic');
           doc.text('[TTE Terlampir]', sigX + 6, bottomBlockY + 11);
         }

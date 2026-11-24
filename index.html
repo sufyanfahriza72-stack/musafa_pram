@@ -1647,6 +1647,41 @@
       });
     }
 
+    function generateQrDataUrlForPdf(text) {
+      return new Promise((resolve) => {
+        if (!window.QRCode) return resolve(null);
+        const tempDiv = document.createElement('div');
+        tempDiv.style.position = 'fixed';
+        tempDiv.style.left = '-9999px';
+        document.body.appendChild(tempDiv);
+
+        try {
+          new QRCode(tempDiv, {
+            text: text,
+            width: 180,
+            height: 180,
+            colorDark: '#0f172a',
+            colorLight: '#ffffff'
+          });
+          setTimeout(() => {
+            const canvas = tempDiv.querySelector('canvas');
+            const img = tempDiv.querySelector('img');
+            let dataUrl = null;
+            if (canvas) {
+              dataUrl = canvas.toDataURL('image/png');
+            } else if (img && img.src) {
+              dataUrl = img.src;
+            }
+            if (tempDiv.parentNode) tempDiv.parentNode.removeChild(tempDiv);
+            resolve(dataUrl);
+          }, 80);
+        } catch (e) {
+          if (tempDiv.parentNode) tempDiv.parentNode.removeChild(tempDiv);
+          resolve(null);
+        }
+      });
+    }
+
     function drawKopSurat(doc, logoDataUrl) {
       const pageWidth = doc.internal.pageSize.getWidth();
       if (logoDataUrl) doc.addImage(logoDataUrl, 'PNG', 18, 12, 18, 18);
@@ -1696,9 +1731,9 @@
       showToast('Menyimpan Notulensi ke Spreadsheet & membuat PDF...');
 
       const tokenTte = await getActiveTteTokenAsync();
-      const [logoDataUrl, tteImgDataUrl] = await Promise.all([
+      const [logoDataUrl, qrTteDataUrl] = await Promise.all([
         loadImageAsDataUrl(LOGO_URL),
-        loadImageAsDataUrl(TTE_SPECIMEN_URL)
+        generateQrDataUrlForPdf(`MUSAFA-TTE-TOKEN:${tokenTte}`)
       ]);
 
       const now = new Date();
@@ -1714,7 +1749,7 @@
         Isi: isi,
         TokenTTE: tokenTte,
         Penandatangan: 'Muhammad Sufyan Fahriza',
-        Jabatan: 'Eselon III (Pejabat Rohis)',
+        Jabatan: '',
         Tanggal: tglCetak
       };
 
@@ -1769,7 +1804,7 @@
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(10);
         const isiLines = doc.splitTextToSize(isi, pageWidth - 36);
-        const maxContentY = pageHeight - 65;
+        const maxContentY = pageHeight - 68;
 
         for (let i = 0; i < isiLines.length; i++) {
           if (cursorY > maxContentY) {
@@ -1786,29 +1821,27 @@
         const totalPages = doc.getNumberOfPages();
         doc.setPage(totalPages);
 
-        if (cursorY > pageHeight - 62) {
+        if (cursorY > pageHeight - 66) {
           doc.addPage();
           drawKopSurat(doc, logoDataUrl);
         }
 
-        const bottomBlockY = pageHeight - 52;
+        const bottomBlockY = pageHeight - 56;
         const sigX = pageWidth - 88;
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(9.5);
         doc.text('Disahkan secara elektronik (TTE) oleh,', sigX, bottomBlockY);
 
-        if (tteImgDataUrl) doc.addImage(tteImgDataUrl, 'PNG', sigX + 6, bottomBlockY + 2, 34, 16);
-        else {
+        if (qrTteDataUrl) {
+          doc.addImage(qrTteDataUrl, 'PNG', sigX + 6, bottomBlockY + 2, 22, 22);
+        } else {
           doc.setFont('helvetica', 'italic');
-          doc.text('[TTE Terlampir]', sigX + 6, bottomBlockY + 11);
+          doc.text('[QR TTE]', sigX + 6, bottomBlockY + 12);
         }
 
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(9.5);
-        doc.text('Muhammad Sufyan Fahriza', sigX, bottomBlockY + 23);
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(8.5);
-        doc.text('Eselon III (Pejabat Rohis)', sigX, bottomBlockY + 27.5);
+        doc.text('Muhammad Sufyan Fahriza', sigX, bottomBlockY + 28);
 
         const footerLineY = pageHeight - 18;
         doc.setDrawColor(148, 163, 184);

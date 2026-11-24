@@ -1,5 +1,5 @@
-const CACHE_NAME = 'musafa-mobile-pwa-v6';
-const ASSETS_TO_CACHE = [
+const CACHE_NAME = 'musafa-pwa-v3';
+const STATIC_ASSETS = [
   './',
   './index.html',
   './manifest.json'
@@ -7,7 +7,7 @@ const ASSETS_TO_CACHE = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS_TO_CACHE))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)).catch(() => {})
   );
   self.skipWaiting();
 });
@@ -15,54 +15,38 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      )
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
     )
   );
   self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
-
-  if (event.request.url.includes('script.google.com')) {
-    return;
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
   }
+});
 
-  const reqUrl = new URL(event.request.url);
-  const isHtmlOrManifest =
-    reqUrl.pathname.endsWith('/') ||
-    reqUrl.pathname.endsWith('/index.html') ||
-    reqUrl.pathname.endsWith('/manifest.json');
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
 
-  if (isHtmlOrManifest) {
-    event.respondWith(
-      fetch(event.request)
-        .then((networkRes) => {
-          if (networkRes && networkRes.ok) {
-            const clone = networkRes.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return networkRes;
-        })
-        .catch(() => caches.match(event.request))
-    );
+  const url = new URL(req.url);
+  // Jangan cache panggilan ke Google Apps Script / Google UserContent agar data selalu real-time
+  if (url.hostname.includes('script.google.com') || url.hostname.includes('googleusercontent.com')) {
+    event.respondWith(fetch(req));
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      return (
-        cached ||
-        fetch(event.request).then((networkRes) => {
-          if (networkRes && networkRes.ok) {
-            const clone = networkRes.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return networkRes;
-        })
-      );
-    })
+    fetch(req)
+      .then((res) => {
+        if (res && res.status === 200 && url.origin === self.location.origin) {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req).then((cached) => cached || caches.match('./index.html')))
   );
 });

@@ -190,7 +190,7 @@
   <!-- APLIKASI UTAMA -->
   <div id="main-app" class="hidden flex-1 flex flex-col min-h-screen">
     <header class="sticky top-0 z-30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 lg:px-8 py-3 shadow-sm">
-      <div class="max-w-7xl mx-auto flex items-center justify-between gap-4">
+      <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
         <div class="flex items-center gap-3 cursor-pointer" onclick="switchTab('dashboard')">
           <img src="https://lh3.googleusercontent.com/d/1v9XLw_NjWKP9zdtIgREkPYmgakhKMq_n" alt="Logo" class="w-11 h-11 rounded-xl object-contain bg-blue-50 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700">
           <div>
@@ -199,10 +199,22 @@
           </div>
         </div>
 
-        <div class="flex items-center gap-2 sm:gap-3">
-          <span id="role-badge" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300">
+        <div class="flex items-center gap-1.5 sm:gap-2.5">
+          <span id="role-badge" class="hidden xl:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300">
             <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> ADMIN
           </span>
+
+          <button type="button" onclick="triggerTestNotification()" title="Tes Notifikasi"
+            class="flex items-center gap-1 px-2.5 sm:px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow transition cursor-pointer">
+            <i data-lucide="bell" class="w-3.5 h-3.5 pointer-events-none"></i>
+            <span class="hidden md:inline">Tes Notif</span>
+          </button>
+
+          <button type="button" onclick="triggerTestAlarm()" title="Test Alarm"
+            class="flex items-center gap-1 px-2.5 sm:px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow transition cursor-pointer">
+            <i data-lucide="bell-ring" class="w-3.5 h-3.5 pointer-events-none"></i>
+            <span class="hidden md:inline">Test Alarm</span>
+          </button>
 
           <button type="button" onclick="syncDataFromSheet(false)" title="Sinkronisasi Google Spreadsheet" class="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition cursor-pointer">
             <i id="sync-icon" data-lucide="refresh-cw" class="w-4 h-4 pointer-events-none"></i>
@@ -212,7 +224,7 @@
             <i data-lucide="maximize" class="w-4 h-4 pointer-events-none"></i>
           </button>
 
-          <button type="button" onclick="openSettingsModal()" class="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-700 text-white font-semibold text-xs sm:text-sm shadow transition cursor-pointer">
+          <button type="button" onclick="openSettingsModal()" class="flex items-center gap-1.5 px-3 sm:px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-700 text-white font-semibold text-xs sm:text-sm shadow transition cursor-pointer">
             <i data-lucide="settings" class="w-4 h-4 pointer-events-none"></i>
             <span class="hidden sm:inline">Setting</span>
           </button>
@@ -727,12 +739,21 @@
       'deleteNotulensiArchive'
     ]);
 
-    function playChimeSound() {
+    function ensureAudioContextUnlocked() {
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) return;
         if (!ALARM_AUDIO_CTX) ALARM_AUDIO_CTX = new AudioCtx();
-        if (ALARM_AUDIO_CTX.state === 'suspended') ALARM_AUDIO_CTX.resume().catch(() => {});
+        if (ALARM_AUDIO_CTX.state === 'suspended') {
+          ALARM_AUDIO_CTX.resume().catch(() => {});
+        }
+      } catch (e) {}
+    }
+
+    function playChimeSound() {
+      try {
+        ensureAudioContextUnlocked();
+        if (!ALARM_AUDIO_CTX) return;
         const now = ALARM_AUDIO_CTX.currentTime;
         const notes = [1046.5, 1318.51];
         notes.forEach((freq, idx) => {
@@ -753,12 +774,8 @@
 
     function playLongLoudSirenBurst(isTest = false) {
       try {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (!AudioCtx) return;
-        if (!ALARM_AUDIO_CTX) ALARM_AUDIO_CTX = new AudioCtx();
-        if (ALARM_AUDIO_CTX.state === 'suspended') {
-          ALARM_AUDIO_CTX.resume().catch(() => {});
-        }
+        ensureAudioContextUnlocked();
+        if (!ALARM_AUDIO_CTX) return;
         const now = ALARM_AUDIO_CTX.currentTime;
         const peakGain = isTest ? 0.42 : 0.48;
         const pattern = [
@@ -937,6 +954,7 @@
     }
 
     function triggerTestNotification() {
+      ensureAudioContextUnlocked();
       sendWhatsAppLikeNotification(
         'MUSAFA Mobile: Ada Pengingat Baru!',
         'Halo! Ini contoh tampilan notifikasi bergaya WhatsApp untuk agenda, jadwal, dan tugas Anda.',
@@ -948,6 +966,7 @@
     }
 
     function triggerTestAlarm() {
+      ensureAudioContextUnlocked();
       startAlarmSound(true);
       sendWhatsAppLikeNotification(
         'ALARM MUSAFA AKTIF!',

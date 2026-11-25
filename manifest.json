@@ -1,11 +1,11 @@
 {
   "name": "MUSAFA Mobile - Sistem Manajemen Agenda dan Tugas",
   "short_name": "MUSAFA Mobile",
-  "description": "Aplikasi PWA Manajemen Agenda, Jadwal Pelajaran/Ujian, Tugas, Notulensi PDF, dan TTE",
-  "start_url": "./index.html",
+  "description": "Sistem manajemen agenda, jadwal pelajaran, ujian, tugas, notulensi PDF, dan verifikasi TTE.",
+  "start_url": "./Index.html",
   "scope": "./",
   "display": "standalone",
-  "orientation": "any",
+  "orientation": "portrait-primary",
   "background_color": "#0f172a",
   "theme_color": "#1d4ed8",
   "icons": [

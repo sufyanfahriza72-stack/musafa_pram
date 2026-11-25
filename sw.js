@@ -1,8 +1,7 @@
-const CACHE_NAME = 'musafa-pwa-final-v1';
+const CACHE_NAME = 'musafa-mobile-v4';
 const STATIC_ASSETS = [
-  './',
-  './index.html',
-  './manifest.json'
+  '/',
+  '/index.html'
 ];
 
 self.addEventListener('install', (event) => {
@@ -22,9 +21,49 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+  const data = event && event.data;
+  if (!data) return;
+
+  if (data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
   }
+
+  if (data.type === 'SHOW_WA_NOTIFICATION') {
+    const title = data.title || 'MUSAFA Mobile';
+    const options = {
+      body: data.body || 'Ada pengingat agenda atau tugas baru.',
+      icon: data.icon || 'https://lh3.googleusercontent.com/d/1v9XLw_NjWKP9zdtIgREkPYmgakhKMq_n',
+      badge: data.icon || 'https://lh3.googleusercontent.com/d/1v9XLw_NjWKP9zdtIgREkPYmgakhKMq_n',
+      tag: data.tag || ('musafa-notif-' + Date.now()),
+      renotify: true,
+      requireInteraction: true,
+      vibrate: [350, 150, 350, 150, 500],
+      data: { url: data.url || '/' }
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(title, options).catch(() => {})
+    );
+  }
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification && event.notification.data && event.notification.data.url) || '/';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client) {
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
+    })
+  );
 });
 
 self.addEventListener('fetch', (event) => {
@@ -32,20 +71,11 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
-  if (url.hostname.includes('script.google.com') || url.hostname.includes('googleusercontent.com')) {
-    event.respondWith(fetch(req));
-    return;
-  }
+  if (url.origin !== self.location.origin) return;
 
-  event.respondWith(
-    fetch(req)
-      .then((res) => {
-        if (res && res.status === 200 && url.origin === self.location.origin) {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-        }
-        return res;
-      })
-      .catch(() => caches.match(req).then((cached) => cached || caches.match('./index.html')))
-  );
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req).catch(() => caches.match('/index.html') || caches.match('/'))
+    );
+  }
 });
